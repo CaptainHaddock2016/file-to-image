@@ -112,6 +112,15 @@ def encode_from_file():
     
     messagebox.showinfo("Encoding Finished", "The file has been encoded successfully.")
     
+def resource_path(relative):
+    return os.path.join(
+        os.environ.get(
+            "_MEIPASS2",
+            os.path.abspath(".")
+        ),
+        relative
+    )
+    
 def progress_step():
     progress_var.set(progress_var.get() + 1)
     root.update_idletasks()
@@ -193,7 +202,7 @@ def warn_user_res(event):
 root = tk.Tk()
 root.resizable(False,False)
 
-root.iconbitmap("icon.ico")
+root.iconphoto(False, tk.PhotoImage(file=os.path.join(resource_path("icon.png"))))
 
 progress_var = tk.DoubleVar()
 
