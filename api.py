@@ -3,9 +3,7 @@ import math
 import utils
 import os
 import zlib
-import numpy as np
 import requests
-from tqdm import tqdm
 import imageio
 from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
@@ -138,7 +136,7 @@ def encode_file_in_images(file_path, output_dir, image_resolution, password=None
     bytes_per_image = image_resolution[0] * image_resolution[1] * 3
     num_images = math.ceil(len(data) / bytes_per_image)
 
-    for img_index in tqdm(range(num_images)):
+    for img_index in range(num_images):
         start_byte = img_index * bytes_per_image
         end_byte = start_byte + bytes_per_image
         image_bytes = data[start_byte:end_byte]
@@ -196,7 +194,7 @@ def decode_file_from_images(image_dir, save_path, password=None, progressfunc=No
     image_files = sorted([f for f in os.listdir(image_dir) if f.endswith(f'.{TYPE}')])
 
     all_extracted_bytes = []
-    for image_file in tqdm(image_files):
+    for image_file in image_files:
         image = Image.open(os.path.join(image_dir, image_file))
         pixels = image.load()
 
@@ -234,7 +232,6 @@ def decode_file_from_images(image_dir, save_path, password=None, progressfunc=No
     return True
         
 def encode_file_in_gif(file_path, output_path, image_resolution, password=None, progressfunc=None):
-    
     encrypted = bool(password)
     with open(file_path, 'rb') as file:
         file_bytes = file.read()
@@ -245,7 +242,6 @@ def encode_file_in_gif(file_path, output_path, image_resolution, password=None, 
     
     file_bytes = zlib.compress(file_bytes, 1)
         
-    encrypted = bool(password)
     header = create_header(os.path.basename(file_path), file_bytes, fsize, encrypted)
 
     data = header + file_bytes
@@ -255,50 +251,38 @@ def encode_file_in_gif(file_path, output_path, image_resolution, password=None, 
     num_frames = math.ceil(len(data) / bytes_per_frame)
     
     with imageio.get_writer(output_path, mode='I', format='GIF', palettesize=256) as writer:
-        for frame_index in tqdm(range(num_frames)):
+        for frame_index in range(num_frames):
             start_byte = frame_index * bytes_per_frame
             end_byte = start_byte + bytes_per_frame
             frame_data = data[start_byte:end_byte]
-            image_array = np.zeros((image_resolution[1], image_resolution[0], 3), dtype=np.uint8)
-            for i, byte in enumerate(frame_data):
-                y, x = divmod(i, image_resolution[0])
-                image_array[y, x] = [byte, byte, byte]  
-            writer.append_data(image_array)
+            image = Image.new('L', image_resolution)
+            image.putdata(frame_data)
+            writer.append_data(image)
             
             if progressfunc:
                 progressfunc()
     
 def decode_file_from_gif(gif_path, password=None):
-
     gif = imageio.mimread(gif_path, memtest=False)
 
     all_extracted_bytes = bytearray()
     data_length = 0
     retrieved_length = False
     
-    for frame in tqdm(gif):
+    for frame in gif:
         pil_image = Image.fromarray(frame)
-        rgb_frame = pil_image.convert('RGB')
-        rgb_array = np.array(rgb_frame)
+        rgb_frame = pil_image.convert('L')
+        for byte_value in rgb_frame.getdata():
+            all_extracted_bytes.append(byte_value)
+            if not retrieved_length and len(all_extracted_bytes) >= 8:
+                data_length = int.from_bytes(all_extracted_bytes[:8], 'big')
+                retrieved_length = True
+            if len(all_extracted_bytes) - 8 >= data_length:
+                break
+        else:
+            continue
+        break
 
-        for y in range(rgb_array.shape[0]):
-            for x in range(rgb_array.shape[1]):
-                pixel = rgb_array[y, x]
-                byte_value = pixel[0]  
-                all_extracted_bytes.append(byte_value)
-
-                if not retrieved_length and len(all_extracted_bytes) >= 8:
-                    data_length = int.from_bytes(all_extracted_bytes[:8], 'big')
-                    retrieved_length = True
-                if len(all_extracted_bytes) - 8 >= data_length:
-                    break
-            else:
-                continue
-            break
-        
-
-
-    data_length = int.from_bytes(all_extracted_bytes[:8], 'big')
     extracted_data = all_extracted_bytes[8:8 + data_length]
 
     file_name, file_size, _, encrypted = read_header(extracted_data)
@@ -312,3 +296,55 @@ def decode_file_from_gif(gif_path, password=None):
 
     with open(file_name, 'wb') as file:
         file.write(file_data)
+
+
+def embed_data_in_image(image_path, data, output_path, password=None):
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+
+    encrypted_data = encrypt_data(data.encode(), password).encode() if password else data
+
+    compressed_data = zlib.compress(encrypted_data)
+
+    with Image.open(image_path) as img:
+        img = img.convert('RGB')
+        pixels = img.load()
+
+        total_pixels = img.size[0] * img.size[1]
+
+        if len(compressed_data) * 8 > total_pixels:
+            raise ValueError("Not enough space in the image to store the data")
+
+        data_bits = list(map(int, ''.join([bin(byte)[2:].zfill(8) for byte in compressed_data])))
+        data_index = 0
+        for y in range(img.size[1]):
+            for x in range(img.size[0]):
+                if data_index < len(data_bits):
+                    pixel = list(pixels[x, y])
+                    for n in range(3): 
+                        if data_index < len(data_bits):
+                            pixel[n] = pixel[n] & ~1 | data_bits[data_index]
+                            data_index += 1
+                    pixels[x, y] = tuple(pixel)
+
+    img.save(output_path, 'PNG')
+    
+def extract_data_from_image(image_path, password=None):
+
+    with Image.open(image_path) as img:
+        img = img.convert('RGB')
+        pixels = img.load()
+
+        data_bits = []
+        for y in range(img.size[1]):
+            for x in range(img.size[0]):
+                for n in range(3):
+                    data_bits.append(pixels[x, y][n] & 1)
+
+        data_bytes = bytearray(int(''.join(map(str, data_bits[i:i+8])), 2) for i in range(0, len(data_bits), 8))
+
+    decompressed_data = zlib.decompress(data_bytes)
+
+    decrypted_data = decrypt_data(decompressed_data, password) if password else decompressed_data
+
+    return decrypted_data
